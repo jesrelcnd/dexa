@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#05070a">
+<title>Baby’s breath</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{height:100%;background:#05070a;overflow:hidden;touch-action:manipulation;-webkit-user-select:none;user-select:none}
+  canvas{position:fixed;inset:0;width:100%;height:100%;display:block}
+</style>
+</head>
+<body>
+<canvas id="c" aria-label="A bouquet of baby’s breath flowers growing, drawn in tiny characters"></canvas>
+
+<script>
+const cv = document.getElementById('c'), g = cv.getContext('2d');
+const sc = document.createElement('canvas'), sg = sc.getContext('2d');            // hidden scene
+const sm = document.createElement('canvas'), mg = sm.getContext('2d', { willReadFrequently: true }); // 1 pixel = 1 character
+const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+const CW = 4.6, CH = 7.4;                    // character cell size in CSS px
+const RAMP = '.,:;+=*xX#%@';
+let W, H, dpr, cols, rows, branches, flowers, stars, cells, total, t0, raf, lastW = 0, done = false;
+
+const rnd = (a, b) => a + Math.random() * (b - a);
+const lerp = (a, b, t) => a + (b - a) * t;
+const clamp = v => Math.max(0, Math.min(1, v));
+const backOut = t => { const c = 1.70158; return 1 + (c + 1) * Math.pow(t - 1, 3) + c * Math.pow(t - 1, 2); };
+
+function size() {
+  dpr = Math.min(window.devicePixelRatio || 1, 3);
+  W = innerWidth; H = innerHeight;
+  cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+  cols = Math.ceil(W / CW); rows = Math.ceil(H / CH);
+  sc.width = cols * 4; sc.height = rows * 4;
+  sm.width = cols; sm.height = rows;
+  mg.imageSmoothingQuality = 'high';
+  stars = Array.from({ length: Math.round(W * H / 5000) }, () => ({
+    x: rnd(0, W), y: rnd(0, H), r: rnd(.4, 1.1), p: rnd(0, 6.28), s: rnd(.0008, .003)
+  }));
+}
+
+/* ---- the bouquet: forked branches that grow, then tiny flowers that open ---- */
+const COLORS = ['#fffdf5', '#fffdf5', '#fffdf5', '#ffe6ec', '#f2ecff', '#fff3cf'];
+
+function grow(px, py, ang, len, depth, start) {
+  const dur = 240 + len * 3;
+  const ex = px + Math.sin(ang) * len, ey = py - Math.cos(ang) * len;
+  const bend = rnd(-.2, .2) * len;
+  const cx = (px + ex) / 2 + Math.cos(ang) * bend, cy = (py + ey) / 2 + Math.sin(ang) * bend;
+  branches.push({ px, py, cx, cy, ex, ey, start, dur, d: depth });
+  const end = start + dur;
+  if (depth < 4) {
+    const n = depth < 2 ? 3 : 2;
+    for (let i = 0; i < n; i++) {
+      const spread = (i - (n - 1) / 2) * .6 + rnd(-.22, .22);
+      grow(ex, ey, ang + spread, len * rnd(.5, .64), depth + 1, end - dur * .1);
+    }
+    if (depth >= 2) addFlowers(cx, cy, end, 1);
+  } else {
+    addFlowers(ex, ey, end, 3);
+  }
+}
+
+function addFlowers(x, y, start, n) {
+  for (let i = 0; i < n; i++) {
+    flowers.push({
+      x: x + rnd(-8, 8), y: y + rnd(-8, 8), r: rnd(3.2, 6),
+      rot: rnd(0, 6.28), start: start + rnd(0, 800),
+      col: COLORS[(Math.random() * COLORS.length) | 0]
+    });
+  }
+}
+
+function build() {
+  branches = []; flowers = []; cells = []; done = false;
+  const bx = W / 2, by = H * 0.9;
+  const L = Math.min(H * 0.3, W * 0.8);
+  const stems = 11;
+  for (let i = 0; i < stems; i++) {
+    const f = i / (stems - 1) - .5;
+    const ang = f * 1.7 + rnd(-.1, .1);
+    grow(bx + rnd(-6, 6), by, ang, L * rnd(.85, 1.1) * (1 - Math.abs(f) * .2), 0, i * 120);
+  }
+  let m = 0;
+  branches.forEach(b => m = Math.max(m, b.start + b.dur));
+  flowers.forEach(f => m = Math.max(m, f.start + 700));
+  total = m + 150;
+  flowers.sort((a, b) => a.y - b.y);
+}
+
+function drawFlower(c, f, s) {
+  c.fillStyle = f.col;
+  c.beginPath();
+  for (let k = 0; k < 5; k++) {
+    const a = f.rot + k * 1.2566, px = f.x + Math.cos(a) * s * .62, py = f.y + Math.sin(a) * s * .62;
+    c.moveTo(px + s * .6, py);
+    c.arc(px, py, s * .6, 0, 6.2832);
+  }
+  c.fill();
+  c.fillStyle = '#f0d98a';
+  c.beginPath(); c.arc(f.x, f.y, s * .26, 0, 6.2832); c.fill();
+}
+
+/* paint the bouquet at time t into the hidden scene, then read it back as characters */
+function sample(t) {
+  sg.setTransform(1, 0, 0, 1, 0, 0);
+  sg.fillStyle = '#000'; sg.fillRect(0, 0, sc.width, sc.height);
+  sg.setTransform(sc.width / W, 0, 0, sc.height / H, 0, 0);
+  sg.lineCap = 'round';
+  for (const b of branches) {
+    const p = clamp((t - b.start) / b.dur);
+    if (p <= 0) continue;
+    const ax = lerp(b.px, b.cx, p), ay = lerp(b.py, b.cy, p);
+    const bx2 = lerp(b.cx, b.ex, p), by2 = lerp(b.cy, b.ey, p);
+    sg.strokeStyle = b.d < 2 ? '#8dc27f' : '#6fa468';
+    sg.lineWidth = [3.4, 2.8, 2.4, 2.1, 1.9][b.d];
+    sg.beginPath();
+    sg.moveTo(b.px, b.py);
+    sg.quadraticCurveTo(ax, ay, lerp(ax, bx2, p), lerp(ay, by2, p));
+    sg.stroke();
+  }
+  for (const f of flowers) {
+    const p = clamp((t - f.start) / 700);
+    if (p > 0) drawFlower(sg, f, f.r * 1.45 * backOut(p));
+  }
+  mg.clearRect(0, 0, cols, rows);
+  mg.drawImage(sc, 0, 0, cols, rows);
+  const d = mg.getImageData(0, 0, cols, rows).data;
+  const out = [];
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const i = (r * cols + c) * 4, R = d[i], G = d[i + 1], B = d[i + 2];
+      const mx = Math.max(R, G, B);
+      if (mx < 34) continue;
+      const lum = (R * .3 + G * .59 + B * .11) / 255;
+      const k = Math.min(255 / mx, 1.7);                       // brighten, keep hue
+      const ch = RAMP[Math.min(RAMP.length - 1, (Math.pow(lum, .6) * RAMP.length) | 0)];
+      out.push({
+        x: c * CW, y: r * CH, ch,
+        col: 'rgb(' + ((R * k) & 248) + ',' + ((G * k) & 248) + ',' + ((B * k) & 248) + ')',
+        p: Math.random() * 6.28
+      });
+    }
+  }
+  cells = out;
+}
+
+function paint(now) {
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.fillStyle = '#05070a'; g.fillRect(0, 0, W, H);
+  // twinkling stars
+  g.fillStyle = '#fff';
+  for (const s of stars) {
+    g.globalAlpha = reduce ? .5 : .25 + .6 * (.5 + .5 * Math.sin(now * s.s + s.p));
+    g.fillRect(s.x, s.y, s.r, s.r);
+  }
+  // the bouquet, drawn as tiny characters
+  g.font = (CH * .98) + 'px ui-monospace, Menlo, "SF Mono", monospace';
+  g.textBaseline = 'top';
+  for (const c of cells) {
+    g.globalAlpha = reduce ? 1 : (done ? .8 + .2 * Math.sin(now * .0025 + c.p) : 1);
+    g.fillStyle = c.col;
+    g.fillText(c.ch, c.x, c.y);
+  }
+  g.globalAlpha = 1;
+}
+
+let lastDraw = 0;
+function frame(now) {
+  raf = requestAnimationFrame(frame);
+  if (now - lastDraw < 33) return;          // ~30 fps keeps phones cool
+  lastDraw = now;
+  const t = now - t0;
+  if (!done) {
+    sample(Math.min(t, total));
+    if (t >= total) done = true;
+  }
+  paint(now);
+}
+
+function start() {
+  cancelAnimationFrame(raf);
+  build();
+  if (reduce) { sample(total); done = true; paint(0); return; }
+  t0 = performance.now();
+  raf = requestAnimationFrame(frame);
+}
+
+addEventListener('resize', () => {
+  if (innerWidth === lastW) return;       // ignore iPhone address-bar height changes
+  lastW = innerWidth; size(); start();
+});
+document.addEventListener('pointerup', start);   // tap to grow a new bouquet
+
+size(); lastW = innerWidth; start();
+</script>
+</body>
+</html>
